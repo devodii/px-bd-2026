@@ -1,7 +1,7 @@
 """Get sermon media into the pipeline.
 
     bot           run the Telegram bot (what the compose service runs): send or forward sermon audio/video
-                  to it to save it; reply /transcribe to any audio to get its transcript in 5-minute parts
+                  to it to save it; reply /transcribe to any audio to get its transcript as a .txt file
     import-local  register files dropped into ./data/inbox (no Telegram needed)
 
 The bot connects over MTProto (Telethon) rather than the HTTP Bot API, because the HTTP Bot API
@@ -124,10 +124,31 @@ async def backfill(client, conn, handle) -> None:
         asyncio.ensure_future(task)
 
 
-HELP = (
-    "Send or forward sermon audio/video here and I'll save it for transcription.\n\n"
-    "Reply to any audio with /transcribe to get its transcript back in 5-minute parts."
+GUIDE = """👋 <b>Welcome to the Sermon Transcriber</b>
+I turn sermon recordings into text you can read, search and quote.
+
+<b>How to use me</b>
+1️⃣ <b>Send me the sermon</b>: upload or forward the audio (or video) here.
+2️⃣ <b>Reply to it with /transcribe</b>: long-press the audio → Reply → type /transcribe
+3️⃣ <b>Watch the progress bar</b>: when it's done I send you the full transcript as a .txt file.
+
+<b>Good to know</b>
+• A 1-hour sermon takes about 3 minutes.
+• Lines marked <b>[?]</b> are ones I wasn't sure about. Check them against the audio before quoting.
+• Sermons I've already done come back straight away.
+• Sending the same audio twice is fine; I won't do the work twice.
+• In a group, add me and reply /transcribe to any audio there.
+
+<b>Commands</b>
+/transcribe: reply to an audio to get its transcript
+/help: show this guide again"""
+
+# Shown on the empty chat before someone presses Start, and on the bot's profile.
+DESCRIPTION = (
+    "I turn sermon recordings into text. Send me a sermon audio, reply to it with /transcribe, "
+    "and I'll send back the full transcript as a text file. Press Start to see how."
 )
+ABOUT = "Turns sermon audio into text. Send an audio, reply /transcribe."
 
 
 async def run_bot() -> None:
@@ -148,8 +169,12 @@ async def run_bot() -> None:
     me = await client.get_me()
     await client(functions.bots.SetBotCommandsRequest(
         scope=types.BotCommandScopeDefault(), lang_code="",
-        commands=[types.BotCommand("transcribe", "Reply to an audio to get its transcript")],
+        commands=[
+            types.BotCommand("transcribe", "Reply to an audio to get its transcript"),
+            types.BotCommand("help", "How to use this bot"),
+        ],
     ))
+    await client(functions.bots.SetBotInfoRequest(lang_code="", about=ABOUT, description=DESCRIPTION))
     log.info("bot @%s is listening; send or forward sermon audio to it", me.username)
 
     downloads = asyncio.Semaphore(config.TG_PARALLEL_DOWNLOADS)
@@ -182,24 +207,35 @@ async def run_bot() -> None:
                 await asyncio.sleep(1)  # someone else is downloading it; wait for their row
         return sermon_id
 
-    async def on_file(msg):
+    async def on_file(msg, announce_known: bool = True):
         try:
             result = await fetch(msg)
-        except Exception as e:
+        except Exception:
             log.exception("download failed")
-            result = f"Failed to save {msg.file.name or 'file'}: {e}"
-        if result and not result.startswith("Already"):
-            await msg.reply(result)
+            await msg.reply("❌ I couldn't save this file. Please try sending it again.")
+            return
+        if result is None:
+            return  # already being downloaded by another task
+        if result.startswith("Already"):
+            if announce_known:
+                await msg.reply("👍 I already have this one. Reply to it with /transcribe to get the transcript.")
+            return
+        await msg.reply("✅ <b>Saved.</b> Reply to this audio with /transcribe to get the transcript.", parse_mode="html")
+
+    @client.on(events.NewMessage(incoming=True, pattern=r"^/(start|help)(?:@\w+)?\b"))
+    async def on_help(event):
+        if allowed(event.sender_id):
+            await event.reply(GUIDE, parse_mode="html", link_preview=False)
 
     @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
     async def on_private(event):
         msg = event.message
-        if not allowed(event.sender_id) or (msg.text or "").startswith("/transcribe"):
-            return
+        if not allowed(event.sender_id) or (msg.text or "").startswith("/"):
+            return  # commands have their own handlers
         if is_media(msg):
             await on_file(msg)
         else:
-            await event.reply(f"{HELP}\n\n(your user id: {event.sender_id})")
+            await event.reply(GUIDE, parse_mode="html", link_preview=False)
 
     @client.on(events.NewMessage(incoming=True, pattern=r"^/transcribe(?:@(\w+))?\b"))
     async def on_transcribe(event):
@@ -210,22 +246,24 @@ async def run_bot() -> None:
             return
         audio = await event.get_reply_message()
         if not audio or not is_media(audio):
-            await event.reply("↩️ Reply to an audio or video message with /transcribe")
+            await event.reply("↩️ Reply to an <b>audio</b> with /transcribe: long-press the audio → Reply → /transcribe",
+                              parse_mode="html")
             return
 
         name = html.escape(audio.file.name or "Audio")
         status = await audio.reply(f"🎧 <b>{name}</b>\n⬇️ Downloading…", parse_mode="html")
         try:
             sermon_id = await ensure_sermon(audio)
-        except Exception as e:
+        except Exception:
             log.exception("download for /transcribe failed")
-            await status.edit(f"❌ Couldn't download this file: {e}")
+            await status.edit("❌ I couldn't download this file. Please send it again and retry /transcribe.")
             return
         if not request(conn, sermon_id, event.chat_id, audio.id, status.id, event.sender_id):
             await status.edit("👆 Already working on this one — progress is in the message above.")
 
     asyncio.create_task(Delivery(client, conn).run())
-    await backfill(client, conn, on_file)
+    # Quiet about files it already has, so a restart doesn't reply "already have" to every old message.
+    await backfill(client, conn, lambda msg: on_file(msg, announce_known=False))
     await client.run_until_disconnected()
 
 
