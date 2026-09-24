@@ -11,6 +11,9 @@ fi
 
 set -a; source .env; set +a
 export WHISPER_BACKEND=mlx
+# Once the model is cached, don't phone home to Hugging Face, so the transcriber also starts offline.
+repo="${MLX_WHISPER_MODEL:-mlx-community/whisper-large-v3-turbo}"
+[ -d "$HOME/.cache/huggingface/hub/models--${repo//\//--}" ] && export HF_HUB_OFFLINE=1
 export DATA_DIR="$PWD/data"
 export DATABASE_URL="postgresql://px:px@localhost:${POSTGRES_PORT:-54329}/px"
 export REDIS_URL="redis://localhost:${REDIS_PORT:-63790}/0"
