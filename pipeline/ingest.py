@@ -3,6 +3,7 @@
     login                     one-time interactive Telegram login (phone number + code)
     send-code <phone>         non-interactive login, step 1: Telegram texts a code to the phone
     verify <code> [password]  non-interactive login, step 2 (password only if 2FA is on)
+    logout                    end the session on Telegram's side and delete the local session file
     list-chats    print the groups/channels this account can see, with their ids
     sync          download every new audio/video message from TG_GROUP, then exit
     watch         sync every TG_POLL_SECONDS (what the compose service runs)
@@ -110,6 +111,18 @@ async def verify(code: str, password: str | None = None) -> None:
     await client.disconnect()
 
 
+async def logout() -> None:
+    client = make_client()
+    await client.connect()
+    if await client.is_user_authorized():
+        await client.log_out()  # revokes the session server-side and deletes the .session file
+        print("Logged out; session revoked on Telegram and deleted locally.")
+    else:
+        await client.disconnect()
+        Path(config.TG_SESSION + ".session").unlink(missing_ok=True)
+        print("No active login; local session file removed.")
+
+
 async def list_chats() -> None:
     async with await connected_client() as client:
         async for d in client.iter_dialogs():
@@ -202,6 +215,7 @@ def main() -> None:
         "login": lambda: asyncio.run(login()),
         "send-code": lambda: asyncio.run(send_code(*sys.argv[2:3])),
         "verify": lambda: asyncio.run(verify(*sys.argv[2:4])),
+        "logout": lambda: asyncio.run(logout()),
         "list-chats": lambda: asyncio.run(list_chats()),
         "sync": lambda: asyncio.run(sync_once()),
         "watch": lambda: asyncio.run(watch()),
