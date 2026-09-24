@@ -1,6 +1,6 @@
 name: px-bd
 
-# One image for every pipeline service (built by `transcriber`, defined inline so there is no Dockerfile).
+# One image for every pipeline service (built by `chunker`, defined inline so there is no Dockerfile).
 # Code is bind-mounted, so editing pipeline/*.py only needs a `docker compose restart`, not a rebuild.
 x-app: &app
   image: px-bd-pipeline:local
@@ -66,11 +66,6 @@ services:
   # Splits each sermon into CHUNK_SECONDS-long 16 kHz mono FLAC chunks with ffmpeg.
   chunker:
     <<: *app
-    command: ["python", "-m", "pipeline.chunker"]
-
-  # Transcribes chunks with faster-whisper (CPU; Docker on macOS cannot use the Apple GPU).
-  transcriber:
-    <<: *app
     build:
       context: .
       dockerfile_inline: |
@@ -86,6 +81,14 @@ services:
          && (pip install --no-cache-dir cryptg || echo "cryptg unavailable; Telegram downloads will be slower")
         WORKDIR /app
         ENV PYTHONUNBUFFERED=1
+    command: ["python", "-m", "pipeline.chunker"]
+
+  # CPU fallback for machines without a GPU; very slow on Apple Silicon, so it only runs when asked:
+  #   docker compose --profile docker-cpu up -d transcriber
+  # On a Mac, run the native GPU transcriber instead (see README).
+  transcriber:
+    <<: *app
+    profiles: ["docker-cpu"]
     command: ["python", "-m", "pipeline.transcriber"]
     volumes:
       - ./pipeline:/app/pipeline:ro
