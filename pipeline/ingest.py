@@ -1,12 +1,14 @@
 """Get sermon media into the pipeline.
 
-    bot           run the Telegram bot: send or forward sermon audio/video to it (what the compose service runs)
+    bot           run the Telegram bot (what the compose service runs): send or forward sermon audio/video
+                  to it to save it; reply /transcribe to any audio to get its transcript in 5-minute parts
     import-local  register files dropped into ./data/inbox (no Telegram needed)
 
 The bot connects over MTProto (Telethon) rather than the HTTP Bot API, because the HTTP Bot API
 can't download files over 20 MB and sermons are much bigger.
 """
 import asyncio
+import html
 import logging
 import re
 import sys
@@ -122,8 +124,16 @@ async def backfill(client, conn, handle) -> None:
         asyncio.ensure_future(task)
 
 
+HELP = (
+    "Send or forward sermon audio/video here and I'll save it for transcription.\n\n"
+    "Reply to any audio with /transcribe to get its transcript back in 5-minute parts."
+)
+
+
 async def run_bot() -> None:
-    from telethon import TelegramClient, events
+    from telethon import TelegramClient, events, functions, types
+
+    from .deliver import Delivery, request
 
     if not config.TG_API_ID or not config.TG_API_HASH:
         raise NotReady("Set TG_API_ID and TG_API_HASH in .env (create them at https://my.telegram.org -> API development tools)")
@@ -136,37 +146,86 @@ async def run_bot() -> None:
     client = TelegramClient(config.TG_BOT_SESSION, config.TG_API_ID, config.TG_API_HASH, catch_up=True)
     await client.start(bot_token=config.TG_BOT_TOKEN)
     me = await client.get_me()
+    await client(functions.bots.SetBotCommandsRequest(
+        scope=types.BotCommandScopeDefault(), lang_code="",
+        commands=[types.BotCommand("transcribe", "Reply to an audio to get its transcript")],
+    ))
     log.info("bot @%s is listening; send or forward sermon audio to it", me.username)
 
     downloads = asyncio.Semaphore(config.TG_PARALLEL_DOWNLOADS)
     in_flight: set[int] = set()
 
-    async def handle(msg):
-        if config.TG_ALLOWED_USER_IDS and msg.sender_id not in config.TG_ALLOWED_USER_IDS:
-            log.warning("ignoring message from unlisted user %s", msg.sender_id)
-            return
-        if not is_media(msg):
-            await msg.reply(f"Send or forward sermon audio/video files here. (your user id: {msg.sender_id})")
-            return
+    def allowed(user_id) -> bool:
+        if config.TG_ALLOWED_USER_IDS and user_id not in config.TG_ALLOWED_USER_IDS:
+            log.warning("ignoring message from unlisted user %s", user_id)
+            return False
+        return True
+
+    def sermon_id_for(msg) -> int | None:
+        row = conn.execute("SELECT id FROM sermons WHERE source_key = %s", (f"tgdoc:{msg.document.id}",)).fetchone()
+        return row["id"] if row else None
+
+    async def fetch(msg) -> str | None:
+        """Download msg's file unless we have it or another task is already on it. None if skipped."""
         if msg.document.id in in_flight:
-            return
+            return None
         in_flight.add(msg.document.id)
         try:
             async with downloads:
-                result = await download(client, conn, msg)
+                return await download(client, conn, msg)
+        finally:
+            in_flight.discard(msg.document.id)
+
+    async def ensure_sermon(msg) -> int:
+        while (sermon_id := sermon_id_for(msg)) is None:
+            if await fetch(msg) is None:
+                await asyncio.sleep(1)  # someone else is downloading it; wait for their row
+        return sermon_id
+
+    async def on_file(msg):
+        try:
+            result = await fetch(msg)
         except Exception as e:
             log.exception("download failed")
             result = f"Failed to save {msg.file.name or 'file'}: {e}"
-        finally:
-            in_flight.discard(msg.document.id)
-        if not result.startswith("Already"):
+        if result and not result.startswith("Already"):
             await msg.reply(result)
 
     @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
-    async def on_message(event):
-        await handle(event.message)
+    async def on_private(event):
+        msg = event.message
+        if not allowed(event.sender_id) or (msg.text or "").startswith("/transcribe"):
+            return
+        if is_media(msg):
+            await on_file(msg)
+        else:
+            await event.reply(f"{HELP}\n\n(your user id: {event.sender_id})")
 
-    await backfill(client, conn, handle)
+    @client.on(events.NewMessage(incoming=True, pattern=r"^/transcribe(?:@(\w+))?\b"))
+    async def on_transcribe(event):
+        addressed_to = event.pattern_match.group(1)
+        if addressed_to and addressed_to.lower() != me.username.lower():
+            return
+        if not allowed(event.sender_id):
+            return
+        audio = await event.get_reply_message()
+        if not audio or not is_media(audio):
+            await event.reply("↩️ Reply to an audio or video message with /transcribe")
+            return
+
+        name = html.escape(audio.file.name or "Audio")
+        status = await audio.reply(f"🎧 <b>{name}</b>\n⬇️ Downloading…", parse_mode="html")
+        try:
+            sermon_id = await ensure_sermon(audio)
+        except Exception as e:
+            log.exception("download for /transcribe failed")
+            await status.edit(f"❌ Couldn't download this file: {e}")
+            return
+        if not request(conn, sermon_id, event.chat_id, audio.id, status.id, event.sender_id):
+            await status.edit("👆 Already working on this one — progress is in the message above.")
+
+    asyncio.create_task(Delivery(client, conn).run())
+    await backfill(client, conn, on_file)
     await client.run_until_disconnected()
 
 
