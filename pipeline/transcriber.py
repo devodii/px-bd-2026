@@ -186,6 +186,8 @@ def process_next(conn, backend) -> bool:
     sermon = conn.execute(FINISH_SERMON, {"id": chunk["sermon_id"]}).fetchone()
     if sermon:
         write_transcript(conn, sermon)
+    if config.WHISPER_PAUSE_SECONDS:
+        time.sleep(config.WHISPER_PAUSE_SECONDS)  # lets a laptop's GPU cool between chunks
     return True
 
 
