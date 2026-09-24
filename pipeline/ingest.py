@@ -1,12 +1,15 @@
 """Get sermon media into the pipeline.
 
-    login         one-time interactive Telegram login (phone number + code)
+    login                     one-time interactive Telegram login (phone number + code)
+    send-code <phone>         non-interactive login, step 1: Telegram texts a code to the phone
+    verify <code> [password]  non-interactive login, step 2 (password only if 2FA is on)
     list-chats    print the groups/channels this account can see, with their ids
     sync          download every new audio/video message from TG_GROUP, then exit
     watch         sync every TG_POLL_SECONDS (what the compose service runs)
     import-local  register files dropped into ./data/inbox (no Telegram needed)
 """
 import asyncio
+import json
 import logging
 import re
 import sys
@@ -73,6 +76,37 @@ async def login() -> None:
     await client.start()  # prompts for phone number, login code and 2FA password if set
     me = await client.get_me()
     print(f"Logged in as {me.first_name} (@{me.username}). Session saved to {config.TG_SESSION}.session")
+    await client.disconnect()
+
+
+def pending_login_path() -> Path:
+    return Path(config.TG_SESSION).with_name("pending-login.json")
+
+
+async def send_code(phone: str) -> None:
+    client = make_client()
+    await client.connect()
+    sent = await client.send_code_request(phone)
+    pending_login_path().write_text(json.dumps({"phone": phone, "hash": sent.phone_code_hash}))
+    print(f"Code sent to {phone}. Next: verify <code>")
+    await client.disconnect()
+
+
+async def verify(code: str, password: str | None = None) -> None:
+    from telethon.errors import SessionPasswordNeededError
+
+    pending = json.loads(pending_login_path().read_text())
+    client = make_client()
+    await client.connect()
+    try:
+        await client.sign_in(pending["phone"], code, phone_code_hash=pending["hash"])
+    except SessionPasswordNeededError:
+        if not password:
+            sys.exit("This account has two-step verification. Run: verify <code> <password>")
+        await client.sign_in(password=password)
+    pending_login_path().unlink()
+    me = await client.get_me()
+    print(f"Logged in as {me.first_name} (@{me.username}).")
     await client.disconnect()
 
 
@@ -166,6 +200,8 @@ def main() -> None:
     cmd = sys.argv[1] if len(sys.argv) > 1 else "watch"
     commands = {
         "login": lambda: asyncio.run(login()),
+        "send-code": lambda: asyncio.run(send_code(*sys.argv[2:3])),
+        "verify": lambda: asyncio.run(verify(*sys.argv[2:4])),
         "list-chats": lambda: asyncio.run(list_chats()),
         "sync": lambda: asyncio.run(sync_once()),
         "watch": lambda: asyncio.run(watch()),
