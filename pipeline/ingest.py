@@ -1,17 +1,12 @@
 """Get sermon media into the pipeline.
 
-    login                     one-time interactive Telegram login (phone number + code)
-    send-code <phone>         non-interactive login, step 1: Telegram texts a code to the phone
-    verify <code> [password]  non-interactive login, step 2 (password only if 2FA is on)
-    password                  finish a 2FA login: prompts for the cloud password (hidden input)
-    logout                    end the session on Telegram's side and delete the local session file
-    list-chats    print the groups/channels this account can see, with their ids
-    sync          download every new audio/video message from TG_GROUP, then exit
-    watch         sync every TG_POLL_SECONDS (what the compose service runs)
+    bot           run the Telegram bot: send or forward sermon audio/video to it (what the compose service runs)
     import-local  register files dropped into ./data/inbox (no Telegram needed)
+
+The bot connects over MTProto (Telethon) rather than the HTTP Bot API, because the HTTP Bot API
+can't download files over 20 MB and sermons are much bigger.
 """
 import asyncio
-import json
 import logging
 import re
 import sys
@@ -23,7 +18,7 @@ log = logging.getLogger("ingest")
 
 
 class NotReady(Exception):
-    """Telegram isn't configured or logged in yet — a setup step for a human, not a crash."""
+    """Telegram isn't configured yet — a setup step for a human, not a crash."""
 
 
 def safe_name(name: str) -> str:
@@ -62,185 +57,104 @@ def import_local() -> None:
     log.info("import-local: %d new file(s) from %s", added, config.INBOX_DIR)
 
 
-# --- telegram ------------------------------------------------------------------------------------
-
-def make_client():
-    from telethon import TelegramClient
-
-    if not config.TG_API_ID or not config.TG_API_HASH:
-        raise NotReady("Set TG_API_ID and TG_API_HASH in .env (create them at https://my.telegram.org -> API development tools)")
-    Path(config.TG_SESSION).parent.mkdir(parents=True, exist_ok=True)
-    return TelegramClient(config.TG_SESSION, config.TG_API_ID, config.TG_API_HASH)
-
-
-async def login() -> None:
-    client = make_client()
-    await client.start()  # prompts for phone number, login code and 2FA password if set
-    me = await client.get_me()
-    print(f"Logged in as {me.first_name} (@{me.username}). Session saved to {config.TG_SESSION}.session")
-    await client.disconnect()
-
-
-def pending_login_path() -> Path:
-    return Path(config.TG_SESSION).with_name("pending-login.json")
-
-
-async def send_code(phone: str) -> None:
-    client = make_client()
-    await client.connect()
-    sent = await client.send_code_request(phone)
-    pending_login_path().write_text(json.dumps({"phone": phone, "hash": sent.phone_code_hash}))
-    print(f"Code sent to {phone}. Next: verify <code>")
-    await client.disconnect()
-
-
-async def verify(code: str, password: str | None = None) -> None:
-    from telethon.errors import SessionPasswordNeededError
-
-    pending = json.loads(pending_login_path().read_text())
-    client = make_client()
-    await client.connect()
-    try:
-        await client.sign_in(pending["phone"], code, phone_code_hash=pending["hash"])
-    except SessionPasswordNeededError:
-        if not password:
-            sys.exit("This account has two-step verification. In your own terminal run: docker compose run --rm ingest password")
-        await client.sign_in(password=password)
-    pending_login_path().unlink()
-    me = await client.get_me()
-    print(f"Logged in as {me.first_name} (@{me.username}).")
-    await client.disconnect()
-
-
-async def password() -> None:
-    from getpass import getpass
-
-    client = make_client()
-    await client.connect()
-    await client.sign_in(password=getpass("Telegram cloud password (hidden): "))
-    pending_login_path().unlink(missing_ok=True)
-    me = await client.get_me()
-    print(f"Logged in as {me.first_name} (@{me.username}).")
-    await client.disconnect()
-
-
-async def logout() -> None:
-    client = make_client()
-    await client.connect()
-    if await client.is_user_authorized():
-        await client.log_out()  # revokes the session server-side and deletes the .session file
-        print("Logged out; session revoked on Telegram and deleted locally.")
-    else:
-        await client.disconnect()
-        Path(config.TG_SESSION + ".session").unlink(missing_ok=True)
-        print("No active login; local session file removed.")
-
-
-async def list_chats() -> None:
-    async with await connected_client() as client:
-        async for d in client.iter_dialogs():
-            if d.is_group or d.is_channel:
-                print(f"{d.id:>16}  {d.name}")
-
-
-async def connected_client():
-    client = make_client()
-    await client.connect()
-    if not await client.is_user_authorized():
-        await client.disconnect()
-        raise NotReady("Telegram not logged in. Run: docker compose run --rm ingest login")
-    return client
-
-
-async def resolve_group(client):
-    if not config.TG_GROUP:
-        raise NotReady("Set TG_GROUP in .env (run `docker compose run --rm ingest list-chats` to find the id)")
-    async for d in client.iter_dialogs():
-        if str(d.id) == config.TG_GROUP or d.name.strip().lower() == config.TG_GROUP.lower():
-            return d.entity
-    return await client.get_entity(config.TG_GROUP)  # @username or t.me link
-
+# --- telegram bot --------------------------------------------------------------------------------
 
 def is_media(msg) -> bool:
     f = msg.file
-    if not f:
+    if not f or not msg.document:
         return False
     mime = f.mime_type or ""
     return mime.startswith(("audio/", "video/")) or (f.ext or "").lower() in config.MEDIA_EXTS
 
 
-async def sync(client, conn) -> None:
-    group = await resolve_group(client)
-    chat_id = group.id
-    seen = {r["tg_message_id"] for r in conn.execute("SELECT tg_message_id FROM sermons WHERE tg_chat_id = %s", (chat_id,))}
+async def download(client, conn, msg) -> str:
+    """Save one media message to RAW_DIR and register it. Returns a short human-readable result."""
+    f = msg.file
+    name = f.name or f"{msg.id}{f.ext or ''}"
+    # Keyed by Telegram's document id, so forwarding the same file twice doesn't download it twice.
+    source_key = f"tgdoc:{msg.document.id}"
+    if conn.execute("SELECT 1 FROM sermons WHERE source_key = %s", (source_key,)).fetchone():
+        return f"Already have {name}"
+
     config.RAW_DIR.mkdir(parents=True, exist_ok=True)
+    dest = config.RAW_DIR / f"{msg.document.id}_{safe_name(name)}"
+    part = dest.with_name(dest.name + ".part")
+    log.info("downloading %s (%.1f MB)", name, (f.size or 0) / 1e6)
 
-    new = 0
-    async for msg in client.iter_messages(group, reverse=True):
-        if msg.id in seen or not is_media(msg):
-            continue
-        f = msg.file
-        name = f.name or f"{msg.id}{f.ext or ''}"
-        dest = config.RAW_DIR / f"{msg.id}_{safe_name(name)}"
-        part = dest.with_name(dest.name + ".part")
-        log.info("downloading %s (%.1f MB)", name, (f.size or 0) / 1e6)
+    last_logged = [0]
 
-        last_logged = [0]
+    def progress(done, total):
+        pct = int(done * 100 / total) if total else 0
+        if pct >= last_logged[0] + 20:
+            last_logged[0] = pct
+            log.info("  %s: %d%%", name, pct)
 
-        def progress(done, total, last_logged=last_logged):
-            pct = int(done * 100 / total) if total else 0
-            if pct >= last_logged[0] + 20:
-                last_logged[0] = pct
-                log.info("  %s: %d%%", name, pct)
-
-        await client.download_media(msg, file=str(part), progress_callback=progress)
-        part.rename(dest)
-        register(conn, source_key=f"tg:{chat_id}:{msg.id}", tg_chat_id=chat_id, tg_message_id=msg.id,
-                 file_name=name, mime_type=f.mime_type, size_bytes=f.size, caption=msg.message or None,
-                 posted_at=msg.date, raw_path=str(dest))
-        new += 1
-    log.info("sync: %d new file(s) from %r", new, getattr(group, "title", config.TG_GROUP))
+    await client.download_media(msg, file=str(part), progress_callback=progress)
+    part.rename(dest)
+    fwd = msg.fwd_from
+    register(conn, source_key=source_key, tg_chat_id=msg.chat_id, tg_message_id=msg.id,
+             file_name=name, mime_type=f.mime_type, size_bytes=f.size, caption=msg.message or None,
+             posted_at=(fwd.date if fwd else msg.date), raw_path=str(dest))
+    log.info("saved %s", dest.name)
+    return f"Saved {name} ({(f.size or 0) / 1e6:.0f} MB)"
 
 
-async def sync_once() -> None:
+async def run_bot() -> None:
+    from telethon import TelegramClient, events
+
+    if not config.TG_API_ID or not config.TG_API_HASH:
+        raise NotReady("Set TG_API_ID and TG_API_HASH in .env (create them at https://my.telegram.org -> API development tools)")
+    if not config.TG_BOT_TOKEN:
+        raise NotReady("Set TG_BOT_TOKEN in .env (create a bot by messaging @BotFather on Telegram)")
+
     conn = db.connect()
-    async with await connected_client() as client:
-        await sync(client, conn)
+    Path(config.TG_BOT_SESSION).parent.mkdir(parents=True, exist_ok=True)
+    # catch_up picks up files sent while the bot was offline.
+    client = TelegramClient(config.TG_BOT_SESSION, config.TG_API_ID, config.TG_API_HASH, catch_up=True)
+    await client.start(bot_token=config.TG_BOT_TOKEN)
+    me = await client.get_me()
+    log.info("bot @%s is listening; send or forward sermon audio to it", me.username)
+
+    one_at_a_time = asyncio.Lock()
+
+    @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
+    async def on_message(event):
+        if config.TG_ALLOWED_USER_IDS and event.sender_id not in config.TG_ALLOWED_USER_IDS:
+            log.warning("ignoring message from unlisted user %s", event.sender_id)
+            return
+        if not is_media(event.message):
+            await event.reply(f"Send or forward sermon audio/video files here. (your user id: {event.sender_id})")
+            return
+        async with one_at_a_time:
+            try:
+                result = await download(client, conn, event.message)
+            except Exception as e:
+                log.exception("download failed")
+                result = f"Failed to save {event.message.file.name or 'file'}: {e}"
+        await event.reply(result)
+
+    await client.run_until_disconnected()
 
 
-async def watch() -> None:
-    conn = db.connect()
+async def bot_forever() -> None:
     while True:
         try:
-            async with await connected_client() as client:
-                await sync(client, conn)
+            await run_bot()
         except NotReady as e:
             log.warning("%s (checking again in 60s)", e)
             await asyncio.sleep(60)
-            continue
-        await asyncio.sleep(config.TG_POLL_SECONDS)
 
 
 def main() -> None:
     bus.setup_logging()
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "watch"
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "bot"
     commands = {
-        "login": lambda: asyncio.run(login()),
-        "send-code": lambda: asyncio.run(send_code(*sys.argv[2:3])),
-        "verify": lambda: asyncio.run(verify(*sys.argv[2:4])),
-        "password": lambda: asyncio.run(password()),
-        "logout": lambda: asyncio.run(logout()),
-        "list-chats": lambda: asyncio.run(list_chats()),
-        "sync": lambda: asyncio.run(sync_once()),
-        "watch": lambda: asyncio.run(watch()),
+        "bot": lambda: asyncio.run(bot_forever()),
         "import-local": import_local,
     }
     if cmd not in commands:
         sys.exit(__doc__)
-    try:
-        commands[cmd]()
-    except NotReady as e:
-        sys.exit(str(e))
+    commands[cmd]()
 
 
 if __name__ == "__main__":

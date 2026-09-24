@@ -52,12 +52,11 @@ services:
       retries: 20
     restart: unless-stopped
 
-  # Pulls sermon audio/video from the Telegram group into ./data/raw.
-  # First time only: `docker compose run --rm ingest login`
+  # Telegram bot: send or forward sermon audio/video to it and it saves them into ./data/raw.
   ingest:
     <<: *app
     entrypoint: ["python", "-m", "pipeline.ingest"]
-    command: ["watch"]
+    command: ["bot"]
     volumes:
       - ./pipeline:/app/pipeline:ro
       - ./data:/data

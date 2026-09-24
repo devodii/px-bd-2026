@@ -4,7 +4,7 @@ Sermon transcription pipeline: Telegram group → ffmpeg chunks → faster-whisp
 Everything runs in Docker; the only thing you need installed is Docker Desktop.
 
 ```
-telegram group ──ingest──▶ data/raw ──chunker──▶ data/chunks (5-min FLAC) ──transcriber──▶ postgres + data/transcripts/*.txt
+telegram bot ──ingest──▶ data/raw ──chunker──▶ data/chunks (5-min FLAC) ──transcriber──▶ postgres + data/transcripts/*.txt
                                ▲                          redis doorbells wake each stage
                  data/inbox ───┘ (import-local)
 ```
@@ -12,15 +12,14 @@ telegram group ──ingest──▶ data/raw ──chunker──▶ data/chunks
 ## Setup
 
 ```sh
-cp .env.example .env              # fill in TG_API_ID / TG_API_HASH from https://my.telegram.org
+cp .env.example .env    # fill in TG_API_ID / TG_API_HASH (https://my.telegram.org) and TG_BOT_TOKEN (@BotFather)
 docker compose up -d --build
-docker compose run --rm ingest login        # once: phone number + code Telegram sends you
-docker compose run --rm ingest list-chats   # find the sermon group's id, put it in TG_GROUP
-docker compose up -d                        # recreate containers so they pick up .env changes
 ```
 
-The Telegram login is saved in `.secrets/telegram.session`. That file is a full login to your
-Telegram account, so it is gitignored. Never share or commit it.
+Then open the bot in Telegram and send or forward the sermon audio/video files to it. It replies
+"Saved ..." for each file, and chunking starts right away. The bot uses MTProto instead of the HTTP
+Bot API, which can't download files over 20 MB. After editing `.env`, run `docker compose up -d` again
+so the containers pick up the change.
 
 No Telegram? Drop audio/video files into `data/inbox/` and run `docker compose run --rm ingest import-local`.
 

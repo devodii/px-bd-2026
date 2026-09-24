@@ -12,9 +12,10 @@ TRANSCRIPTS_DIR = DATA_DIR / "transcripts"
 
 TG_API_ID = int(os.environ.get("TG_API_ID") or 0)
 TG_API_HASH = os.environ.get("TG_API_HASH", "")
-TG_GROUP = os.environ.get("TG_GROUP", "").strip()
-TG_SESSION = os.environ.get("TG_SESSION", "/secrets/telegram")
-TG_POLL_SECONDS = int(os.environ.get("TG_POLL_SECONDS") or 300)
+TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "").strip()
+TG_BOT_SESSION = os.environ.get("TG_BOT_SESSION", "/secrets/bot")
+# Optional comma-separated Telegram user ids allowed to send files; empty = anyone who finds the bot.
+TG_ALLOWED_USER_IDS = {int(x) for x in os.environ.get("TG_ALLOWED_USER_IDS", "").replace(" ", "").split(",") if x}
 
 CHUNK_SECONDS = int(os.environ.get("CHUNK_SECONDS") or 300)
 
