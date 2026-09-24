@@ -18,11 +18,12 @@ CLAIM = """
 UPDATE chunks
 SET status = 'processing', claimed_at = now(), attempts = attempts + 1, updated_at = now()
 WHERE id = (
-    SELECT id FROM chunks
-    WHERE status = 'pending'
-       OR (status = 'processing' AND claimed_at < now() - make_interval(secs => %s))
-    ORDER BY sermon_id, idx
-    FOR UPDATE SKIP LOCKED
+    SELECT c.id FROM chunks c
+    JOIN sermons s ON s.id = c.sermon_id
+    WHERE c.status = 'pending'
+       OR (c.status = 'processing' AND c.claimed_at < now() - make_interval(secs => %s))
+    ORDER BY s.priority DESC, c.sermon_id, c.idx
+    FOR UPDATE OF c SKIP LOCKED
     LIMIT 1
 )
 RETURNING *

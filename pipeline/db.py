@@ -48,6 +48,26 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 
 ALTER TABLE chunks ADD COLUMN IF NOT EXISTS flagged_segments INT;
+-- Sermons someone asked for with /transcribe jump ahead of the backlog.
+ALTER TABLE sermons ADD COLUMN IF NOT EXISTS priority INT NOT NULL DEFAULT 0;
+
+-- A /transcribe from Telegram: progress is edited into status_msg_id, then the transcript is posted
+-- as replies to reply_to_msg_id. parts_sent lets a restarted bot resume without re-sending parts.
+CREATE TABLE IF NOT EXISTS transcript_requests (
+    id              BIGSERIAL PRIMARY KEY,
+    sermon_id       BIGINT NOT NULL REFERENCES sermons(id) ON DELETE CASCADE,
+    chat_id         BIGINT NOT NULL,
+    reply_to_msg_id BIGINT NOT NULL,
+    status_msg_id   BIGINT NOT NULL,
+    requested_by    BIGINT,
+    status          TEXT NOT NULL DEFAULT 'pending',  -- pending | delivering | delivered | failed
+    parts_sent      INT NOT NULL DEFAULT 0,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- One open request per sermon per chat; asking again while it's running doesn't start a second one.
+CREATE UNIQUE INDEX IF NOT EXISTS transcript_requests_open_idx
+    ON transcript_requests (sermon_id, chat_id) WHERE status IN ('pending', 'delivering');
 
 CREATE INDEX IF NOT EXISTS sermons_status_idx ON sermons (status);
 CREATE INDEX IF NOT EXISTS chunks_status_idx ON chunks (status);

@@ -14,7 +14,7 @@ WHERE id = (
     SELECT id FROM sermons
     WHERE status = 'downloaded'
        OR (status = 'chunking' AND claimed_at < now() - make_interval(secs => %s))
-    ORDER BY posted_at NULLS LAST, id
+    ORDER BY priority DESC, posted_at NULLS LAST, id
     FOR UPDATE SKIP LOCKED
     LIMIT 1
 )
