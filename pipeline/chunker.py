@@ -60,7 +60,7 @@ def chunk_sermon(conn, sermon: dict) -> None:
         for idx, (path, start, duration) in enumerate(chunks):
             conn.execute(
                 "INSERT INTO chunks (sermon_id, idx, start_sec, duration_sec, path) VALUES (%s, %s, %s, %s, %s)",
-                (sermon["id"], idx, start, duration, str(path)),
+                (sermon["id"], idx, start, duration, str(path.relative_to(config.DATA_DIR))),
             )
         conn.execute(
             "UPDATE sermons SET status = 'chunked', duration_sec = %s, error = NULL, updated_at = now() WHERE id = %s",

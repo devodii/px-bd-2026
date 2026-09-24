@@ -5,6 +5,7 @@ from . import config
 
 # Sermon lifecycle: downloaded -> chunking -> chunked -> transcribed (or failed)
 # Chunk lifecycle:  pending -> processing -> done (or failed after MAX_ATTEMPTS)
+# chunks.path is relative to DATA_DIR, which differs between Docker (/data) and the Mac (./data).
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sermons (
     id            BIGSERIAL PRIMARY KEY,
@@ -45,6 +46,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (sermon_id, idx)
 );
+
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS flagged_segments INT;
 
 CREATE INDEX IF NOT EXISTS sermons_status_idx ON sermons (status);
 CREATE INDEX IF NOT EXISTS chunks_status_idx ON chunks (status);

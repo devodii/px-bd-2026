@@ -19,6 +19,9 @@ TG_ALLOWED_USER_IDS = {int(x) for x in os.environ.get("TG_ALLOWED_USER_IDS", "")
 
 CHUNK_SECONDS = int(os.environ.get("CHUNK_SECONDS") or 300)
 
+# "mlx" = native Apple Silicon GPU (scripts/transcribe-mac.sh); "faster-whisper" = CPU in Docker
+WHISPER_BACKEND = os.environ.get("WHISPER_BACKEND") or "faster-whisper"
+MLX_WHISPER_MODEL = os.environ.get("MLX_WHISPER_MODEL") or "mlx-community/whisper-large-v3-turbo"
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL") or "medium"
 WHISPER_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE") or "int8"
 WHISPER_CPU_THREADS = int(os.environ.get("WHISPER_CPU_THREADS") or 8)
