@@ -1,0 +1,98 @@
+name: px-bd
+
+# One image for every pipeline service (built by `transcriber`, defined inline so there is no Dockerfile).
+# Code is bind-mounted, so editing pipeline/*.py only needs a `docker compose restart`, not a rebuild.
+x-app: &app
+  image: px-bd-pipeline:local
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    DATABASE_URL: postgresql://px:px@postgres:5432/px
+    REDIS_URL: redis://redis:6379/0
+    DATA_DIR: /data
+  volumes:
+    - ./pipeline:/app/pipeline:ro
+    - ./data:/data
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: px
+      POSTGRES_PASSWORD: px
+      POSTGRES_DB: px
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-54329}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U px -d px"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-63790}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # Pulls sermon audio/video from the Telegram group into ./data/raw.
+  # First time only: `docker compose run --rm ingest login`
+  ingest:
+    <<: *app
+    entrypoint: ["python", "-m", "pipeline.ingest"]
+    command: ["watch"]
+    volumes:
+      - ./pipeline:/app/pipeline:ro
+      - ./data:/data
+      - ./.secrets:/secrets
+
+  # Splits each sermon into CHUNK_SECONDS-long 16 kHz mono FLAC chunks with ffmpeg.
+  chunker:
+    <<: *app
+    command: ["python", "-m", "pipeline.chunker"]
+
+  # Transcribes chunks with faster-whisper (CPU; Docker on macOS cannot use the Apple GPU).
+  transcriber:
+    <<: *app
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM python:3.12-slim
+        RUN apt-get update \
+         && apt-get install -y --no-install-recommends ffmpeg \
+         && rm -rf /var/lib/apt/lists/*
+        RUN pip install --no-cache-dir \
+              "telethon>=1.36,<2" \
+              "psycopg[binary]>=3.2,<4" \
+              "redis>=5,<6" \
+              "faster-whisper>=1.1,<2" \
+         && (pip install --no-cache-dir cryptg || echo "cryptg unavailable; Telegram downloads will be slower")
+        WORKDIR /app
+        ENV PYTHONUNBUFFERED=1
+    command: ["python", "-m", "pipeline.transcriber"]
+    volumes:
+      - ./pipeline:/app/pipeline:ro
+      - ./data:/data
+      - whisper-models:/models
+
+volumes:
+  pgdata:
+  redisdata:
+  whisper-models:
