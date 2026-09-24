@@ -124,11 +124,11 @@ async def backfill(client, conn, handle) -> None:
         asyncio.ensure_future(task)
 
 
-GUIDE = """👋 <b>Welcome to the Sermon Transcriber</b>
-I turn sermon recordings into text you can read, search and quote.
+GUIDE = """👋 <b>Welcome!</b>
+I turn Pastor Chris Xael's sermons into text you can read, search and quote.
 
 <b>How to use me</b>
-1️⃣ <b>Send me the sermon</b>: upload or forward the audio (or video) here.
+1️⃣ <b>Send me the sermon</b>: upload or forward Pastor Chris Xael's sermon audio (or video) here.
 2️⃣ <b>Reply to it with /transcribe</b>: long-press the audio → Reply → type /transcribe
 3️⃣ <b>Watch the progress bar</b>: when it's done I send you the full transcript as a .txt file.
 
@@ -145,10 +145,10 @@ I turn sermon recordings into text you can read, search and quote.
 
 # Shown on the empty chat before someone presses Start, and on the bot's profile.
 DESCRIPTION = (
-    "I turn sermon recordings into text. Send me a sermon audio, reply to it with /transcribe, "
+    "I turn Pastor Chris Xael's sermons into text. Send me a sermon audio, reply to it with /transcribe, "
     "and I'll send back the full transcript as a text file. Press Start to see how."
 )
-ABOUT = "Turns sermon audio into text. Send an audio, reply /transcribe."
+ABOUT = "I turn Pastor Chris Xael's sermons into text. Send an audio, reply /transcribe."
 
 
 async def run_bot() -> None:
