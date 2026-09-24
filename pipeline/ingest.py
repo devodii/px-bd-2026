@@ -89,7 +89,9 @@ async def download(client, conn, msg) -> str:
             last_logged[0] = pct
             log.info("  %s: %d%%", name, pct)
 
-    await client.download_media(msg, file=str(part), progress_callback=progress)
+    # Bigger parts than Telethon's 128 KB default mean fewer round trips per file.
+    await client.download_file(msg.document, file=str(part), part_size_kb=512, file_size=f.size,
+                                progress_callback=progress)
     part.rename(dest)
     fwd = msg.fwd_from
     register(conn, source_key=source_key, tg_chat_id=msg.chat_id, tg_message_id=msg.id,
@@ -97,6 +99,27 @@ async def download(client, conn, msg) -> str:
              posted_at=(fwd.date if fwd else msg.date), raw_path=str(dest))
     log.info("saved %s", dest.name)
     return f"Saved {name} ({(f.size or 0) / 1e6:.0f} MB)"
+
+
+async def backfill(client, conn, handle) -> None:
+    """Fetch, by message id, files sent while the bot was down or still queued when it restarted.
+
+    Bots can't read chat history, but they can fetch their own chats' messages by id.
+    """
+    chats = conn.execute(
+        "SELECT tg_chat_id, min(tg_message_id) AS lo, max(tg_message_id) AS hi FROM sermons "
+        "WHERE tg_chat_id IS NOT NULL GROUP BY 1"
+    ).fetchall()
+    tasks = []
+    for chat in chats:
+        ids = list(range(max(1, chat["lo"] - 50), chat["hi"] + 500))
+        for i in range(0, len(ids), 100):
+            for msg in await client.get_messages(chat["tg_chat_id"], ids=ids[i:i + 100]):
+                if msg and msg.out is False and is_media(msg):
+                    tasks.append(handle(msg))
+    log.info("backfill: checking %d file message(s) from earlier", len(tasks))
+    for task in tasks:
+        asyncio.ensure_future(task)
 
 
 async def run_bot() -> None:
@@ -115,24 +138,35 @@ async def run_bot() -> None:
     me = await client.get_me()
     log.info("bot @%s is listening; send or forward sermon audio to it", me.username)
 
-    one_at_a_time = asyncio.Lock()
+    downloads = asyncio.Semaphore(config.TG_PARALLEL_DOWNLOADS)
+    in_flight: set[int] = set()
+
+    async def handle(msg):
+        if config.TG_ALLOWED_USER_IDS and msg.sender_id not in config.TG_ALLOWED_USER_IDS:
+            log.warning("ignoring message from unlisted user %s", msg.sender_id)
+            return
+        if not is_media(msg):
+            await msg.reply(f"Send or forward sermon audio/video files here. (your user id: {msg.sender_id})")
+            return
+        if msg.document.id in in_flight:
+            return
+        in_flight.add(msg.document.id)
+        try:
+            async with downloads:
+                result = await download(client, conn, msg)
+        except Exception as e:
+            log.exception("download failed")
+            result = f"Failed to save {msg.file.name or 'file'}: {e}"
+        finally:
+            in_flight.discard(msg.document.id)
+        if not result.startswith("Already"):
+            await msg.reply(result)
 
     @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
     async def on_message(event):
-        if config.TG_ALLOWED_USER_IDS and event.sender_id not in config.TG_ALLOWED_USER_IDS:
-            log.warning("ignoring message from unlisted user %s", event.sender_id)
-            return
-        if not is_media(event.message):
-            await event.reply(f"Send or forward sermon audio/video files here. (your user id: {event.sender_id})")
-            return
-        async with one_at_a_time:
-            try:
-                result = await download(client, conn, event.message)
-            except Exception as e:
-                log.exception("download failed")
-                result = f"Failed to save {event.message.file.name or 'file'}: {e}"
-        await event.reply(result)
+        await handle(event.message)
 
+    await backfill(client, conn, handle)
     await client.run_until_disconnected()
 
 

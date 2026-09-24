@@ -13,6 +13,7 @@ TRANSCRIPTS_DIR = DATA_DIR / "transcripts"
 TG_API_ID = int(os.environ.get("TG_API_ID") or 0)
 TG_API_HASH = os.environ.get("TG_API_HASH", "")
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "").strip()
+TG_PARALLEL_DOWNLOADS = int(os.environ.get("TG_PARALLEL_DOWNLOADS") or 4)
 TG_BOT_SESSION = os.environ.get("TG_BOT_SESSION", "/secrets/bot")
 # Optional comma-separated Telegram user ids allowed to send files; empty = anyone who finds the bot.
 TG_ALLOWED_USER_IDS = {int(x) for x in os.environ.get("TG_ALLOWED_USER_IDS", "").replace(" ", "").split(",") if x}
