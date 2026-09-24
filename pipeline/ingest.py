@@ -3,6 +3,7 @@
     login                     one-time interactive Telegram login (phone number + code)
     send-code <phone>         non-interactive login, step 1: Telegram texts a code to the phone
     verify <code> [password]  non-interactive login, step 2 (password only if 2FA is on)
+    password                  finish a 2FA login: prompts for the cloud password (hidden input)
     logout                    end the session on Telegram's side and delete the local session file
     list-chats    print the groups/channels this account can see, with their ids
     sync          download every new audio/video message from TG_GROUP, then exit
@@ -103,9 +104,21 @@ async def verify(code: str, password: str | None = None) -> None:
         await client.sign_in(pending["phone"], code, phone_code_hash=pending["hash"])
     except SessionPasswordNeededError:
         if not password:
-            sys.exit("This account has two-step verification. Run: verify <code> <password>")
+            sys.exit("This account has two-step verification. In your own terminal run: docker compose run --rm ingest password")
         await client.sign_in(password=password)
     pending_login_path().unlink()
+    me = await client.get_me()
+    print(f"Logged in as {me.first_name} (@{me.username}).")
+    await client.disconnect()
+
+
+async def password() -> None:
+    from getpass import getpass
+
+    client = make_client()
+    await client.connect()
+    await client.sign_in(password=getpass("Telegram cloud password (hidden): "))
+    pending_login_path().unlink(missing_ok=True)
     me = await client.get_me()
     print(f"Logged in as {me.first_name} (@{me.username}).")
     await client.disconnect()
@@ -215,6 +228,7 @@ def main() -> None:
         "login": lambda: asyncio.run(login()),
         "send-code": lambda: asyncio.run(send_code(*sys.argv[2:3])),
         "verify": lambda: asyncio.run(verify(*sys.argv[2:4])),
+        "password": lambda: asyncio.run(password()),
         "logout": lambda: asyncio.run(logout()),
         "list-chats": lambda: asyncio.run(list_chats()),
         "sync": lambda: asyncio.run(sync_once()),
