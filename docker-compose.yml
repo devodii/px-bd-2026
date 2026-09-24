@@ -8,7 +8,7 @@ x-app: &app
     - path: .env
       required: false
   environment:
-    DATABASE_URL: postgresql://px:px@postgres:5432/px
+    DATABASE_URL: postgresql://px:${POSTGRES_PASSWORD:-px}@postgres:5432/px
     REDIS_URL: redis://redis:6379/0
     DATA_DIR: /data
   volumes:
@@ -26,10 +26,11 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: px
-      POSTGRES_PASSWORD: px
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-px}
       POSTGRES_DB: px
     ports:
-      - "127.0.0.1:${POSTGRES_PORT:-54329}:5432"
+      # Set POSTGRES_BIND=0.0.0.0 in .env to let other machines connect (only with strong passwords).
+      - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-54329}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

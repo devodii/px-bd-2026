@@ -15,7 +15,7 @@ export WHISPER_BACKEND=mlx
 repo="${MLX_WHISPER_MODEL:-mlx-community/whisper-large-v3-turbo}"
 [ -d "$HOME/.cache/huggingface/hub/models--${repo//\//--}" ] && export HF_HUB_OFFLINE=1
 export DATA_DIR="$PWD/data"
-export DATABASE_URL="postgresql://px:px@localhost:${POSTGRES_PORT:-54329}/px"
+export DATABASE_URL="postgresql://px:${POSTGRES_PASSWORD:-px}@localhost:${POSTGRES_PORT:-54329}/px"
 export REDIS_URL="redis://localhost:${REDIS_PORT:-63790}/0"
 
 # caffeinate keeps the Mac awake for as long as the transcriber runs

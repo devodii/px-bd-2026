@@ -45,4 +45,9 @@ docker compose restart ingest chunker                          # after editing p
 ```
 
 Transcripts land in `data/transcripts/` as timestamped text, and in Postgres
-(`localhost:54329`, user/password/db `px`) in the `chunks` table and the `sermon_transcripts` view.
+(`localhost:54329`, database `px`, user `px`, password `POSTGRES_PASSWORD` from `.env`) in the
+`chunks` table and the `sermon_transcripts` view.
+
+To share the database: set strong `POSTGRES_PASSWORD` / `POSTGRES_READER_PASSWORD` values, set
+`POSTGRES_BIND=0.0.0.0`, run `docker compose up -d` and `./scripts/create-reader.sh`, then give people
+the read-only `pxreader` login.
