@@ -1,0 +1,64 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+// The connection URL lives in prisma.config.ts (Prisma 7) and in the pg adapter (src/db/prisma.ts).
+datasource db {
+  provider = "postgresql"
+}
+
+// The `embedding` and `search_vector` columns use types Prisma cannot model natively
+// (pgvector `vector`, `tsvector`). They are declared as Unsupported so migrations keep them,
+// and are read/written through the raw SQL in src/repositories.
+
+model Sermon {
+  id          String            @id @default(cuid())
+  /// Stable id from the source system; makes ingestion idempotent.
+  externalId  String            @unique @map("external_id")
+  title       String
+  slug        String            @unique
+  speaker     String?
+  date        DateTime?         @db.Date
+  description String?
+  audioUrl    String?           @map("audio_url")
+  /// Seconds.
+  duration    Float?
+  metadata    Json?
+  createdAt   DateTime          @default(now()) @map("created_at")
+  updatedAt   DateTime          @updatedAt @map("updated_at")
+  chunks      TranscriptChunk[]
+
+  @@index([date])
+  @@index([speaker])
+  @@index([title(ops: raw("gin_trgm_ops"))], type: Gin, map: "sermons_title_trgm_idx")
+  @@map("sermons")
+}
+
+model TranscriptChunk {
+  id             String                       @id @default(cuid())
+  /// Stable id from the source system (unique per sermon).
+  externalId     String                       @map("external_id")
+  sermonId       String                       @map("sermon_id")
+  chunkIndex     Int                          @map("chunk_index")
+  /// Seconds from the start of the sermon audio.
+  startTime      Float                        @map("start_time")
+  endTime        Float                        @map("end_time")
+  text           String
+  /// pgvector column, dimension intentionally unconstrained until the embedding provider is chosen.
+  embedding      Unsupported("vector")?
+  /// Which model produced `embedding`; lets us migrate models without deleting data.
+  embeddingModel String?                      @map("embedding_model")
+  searchVector   Unsupported("tsvector")?     @map("search_vector")
+  metadata       Json?
+  createdAt      DateTime                     @default(now()) @map("created_at")
+  updatedAt      DateTime                     @updatedAt @map("updated_at")
+  sermon         Sermon                       @relation(fields: [sermonId], references: [id], onDelete: Cascade)
+
+  @@unique([sermonId, externalId])
+  @@unique([sermonId, chunkIndex])
+  @@index([sermonId, startTime])
+  @@index([searchVector], type: Gin, map: "transcript_chunks_search_vector_idx")
+  @@index([text(ops: raw("gin_trgm_ops"))], type: Gin, map: "transcript_chunks_text_trgm_idx")
+  @@map("transcript_chunks")
+}
