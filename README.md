@@ -51,3 +51,10 @@ Transcripts land in `data/transcripts/` as timestamped text, and in Postgres
 To share the database: set strong `POSTGRES_PASSWORD` / `POSTGRES_READER_PASSWORD` values, set
 `POSTGRES_BIND=0.0.0.0`, run `docker compose up -d` and `./scripts/create-reader.sh`, then give people
 the read-only `pxreader` login.
+
+## Search API
+
+`backend/` is a separate Node/TypeScript service that makes the finished transcripts searchable
+(semantic + keyword + JEV relevance judging, related teachings, optional answers). It has its own
+Postgres + pgvector container and can read finished chunks from this pipeline's database. See
+[`backend/README.md`](backend/README.md).

@@ -1,0 +1,23 @@
+# Local Postgres + pgvector for the search API.
+# Separate from the pipeline's postgres (which has no pgvector) so its data volume is never touched.
+name: px-search
+
+services:
+  search-db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: px
+      POSTGRES_PASSWORD: ${SEARCH_POSTGRES_PASSWORD:-px}
+      POSTGRES_DB: px_search
+    ports:
+      - '127.0.0.1:${SEARCH_POSTGRES_PORT:-54330}:5432'
+    volumes:
+      - searchdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U px -d px_search']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  searchdata:
